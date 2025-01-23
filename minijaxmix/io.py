@@ -11,7 +11,7 @@ def dataframe_to_arrays(df: pl.DataFrame, n_bins: int = 20):
     categorical_idxs = np.concatenate(
         [idx * np.ones(len(schema["var_metadata"][col]["levels"])) for idx, col in enumerate(categorical_df.columns)] +
         [len(categorical_df.columns) + idx * np.ones(n_bins) for idx, col in enumerate(numerical_df.columns)]
-    )
+    ).astype(np.int32)
 
     df = pl.concat((categorical_df, numerical_df), how="horizontal")
     return schema, df.to_dummies().to_numpy().astype(np.bool_), categorical_idxs
