@@ -5,9 +5,9 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 
 import jax.numpy as jnp
 from functools import partial
-import numpy as np
 from jaxtyping import Array, Float, Bool, Integer
-import time
+from tqdm import tqdm
+
 
 ALPHA = 1.0
 
@@ -21,7 +21,6 @@ def conditional_entropy(data, c):
     res = - jnp.sum(jnp.where(c, c * p_x_y, 0), axis=0) / jnp.sum(c, axis=0)
     return res
 
-@partial(jax.jit, static_argnames=("n_splits", "n_gibbs", "n_categories", "n_branch", "rejuvenation", "minibatch_size"))
 def infer(key, data, n_splits, n_gibbs, categorical_idxs, n_categories, n_branch=2, rejuvenation=True, minibatch_size=1000):
     N = data.shape[0]
     p_ys = jnp.array([1.])
@@ -92,13 +91,15 @@ def infer(key, data, n_splits, n_gibbs, categorical_idxs, n_categories, n_branch
         return p_y, w, conditional_entropies, assignments, total_entropy_split, total_entropy_rejuvenation, total_entropy_hard_clustering
 
     keys = jax.random.split(key, n_splits)
+    jit_infer_step = jax.jit(infer_step)
     # we could use lax.scan here, but at the cost of padding each step to the max number of clusters
-    for i in range(n_splits):
+    for i in tqdm(range(n_splits)):
         key = keys[i]
         key, subkey = jax.random.split(key)
         minibatches = make_minibatches(subkey, data, assignments, i + 1, minibatch_size)
 
-        p_ys, ws, conditional_entropies, assignments, total_entropy_split, total_entropy_rejuvenation, total_entropy_hard_clustering = infer_step(key, minibatches, p_ys, ws, conditional_entropies)
+        p_ys, ws, conditional_entropies, assignments, total_entropy_split, total_entropy_rejuvenation, total_entropy_hard_clustering = jit_infer_step(
+            key, minibatches, p_ys, ws, conditional_entropies)
 
         total_entropies_split = total_entropies_split.at[i].set(total_entropy_split)
         total_entropies_rejuvenation = total_entropies_rejuvenation.at[i].set(total_entropy_rejuvenation)
@@ -106,9 +107,11 @@ def infer(key, data, n_splits, n_gibbs, categorical_idxs, n_categories, n_branch
 
     return p_ys, ws, conditional_entropies, total_entropies_split, total_entropies_rejuvenation, total_entropies_hard_clustering
 
+@partial(jax.jit, static_argnames=("num_clusters", "minibatch_size"))
 def make_minibatches(key, data, c, num_clusters, minibatch_size):
     keys = jax.random.split(key, num_clusters)
-    clusters = jax.vmap(jax.random.choice, in_axes=(0, None, None, None, 0))(keys, data, (minibatch_size,), True, (c[None, :] == jnp.arange(num_clusters)[:, None]) / jnp.sum(c[None, :] == jnp.arange(num_clusters)[:, None], axis=1)[:, None])
+    clusters = jax.vmap(jax.random.choice, in_axes=(0, None, None, None, 0))(keys, data, (minibatch_size,), True, 
+        (c[None, :] == jnp.arange(num_clusters)[:, None]) / jnp.sum(c[None, :] == jnp.arange(num_clusters)[:, None], axis=1)[:, None])
     return clusters
 
 @partial(jax.jit, static_argnames=("n_gibbs", "n_segments", "n_categories"))
