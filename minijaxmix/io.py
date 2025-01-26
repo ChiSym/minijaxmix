@@ -14,7 +14,7 @@ def dataframe_to_arrays(df: pl.DataFrame, n_bins: int = 20):
     ).astype(np.int32)
 
     df = pl.concat((categorical_df, numerical_df), how="horizontal")
-    return schema, df.to_dummies().to_numpy().astype(np.bool_), categorical_idxs
+    return schema, df.to_dummies().select(pl.exclude('^.*_null$')).to_numpy().astype(np.bool_), categorical_idxs
 
 def load_huggingface(dataset_path):
     splits = {
