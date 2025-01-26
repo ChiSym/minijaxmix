@@ -21,47 +21,60 @@ def conditional_entropy(data, c):
     res = - jnp.sum(jnp.where(c, c * p_x_y, 0), axis=0) / jnp.sum(c, axis=0)
     return res
 
-@partial(jax.jit, static_argnames=("n_splits", "n_gibbs", "n_categories", "n_branch", "rejuvenation", "minibatch_size"))
-def infer(key, data, n_splits, n_gibbs, categorical_idxs, n_categories, n_branch=2, rejuvenation=True, minibatch_size=1000):
-    N = data.shape[0]
-    p_ys = jnp.array([1.])
-    ws = jnp.array([jnp.mean(data, axis=0)])
-    assignments = jnp.zeros(N, dtype=jnp.int32)
-    conditional_entropies = jnp.array([entropy(data)])
+@partial(jax.jit, static_argnames=("n_clusters", "n_gibbs", "n_categories", "n_branch", "rejuvenation", "minibatch_size"))
+def infer(key, data, n_clusters, n_gibbs, categorical_idxs, n_categories, n_branch=2, rejuvenation=True, minibatch_size=1000):
+    N, k = data.shape
+    p_ys = jnp.zeros(n_clusters)
+    p_ys = p_ys.at[0].set(1.)
+    ws = jnp.nan * jnp.zeros((n_clusters, k))
+    ws = ws.at[0].set(jnp.mean(data, axis=0))
+    conditional_H = jnp.zeros(n_clusters)
+    conditional_H = conditional_H.at[0].set(entropy(data))
 
-    total_entropies_split = jnp.zeros(n_splits)
-    total_entropies_rejuvenation = jnp.zeros(n_splits)
-    total_entropies_hard_clustering = jnp.zeros(n_splits)
+    def infer_step(carry, key_i):
+        p_y, w, conditional_H = carry
+        step_key, i = key_i
 
-    def infer_step(step_key, minibatches, p_ys, ws, conditional_entropies):
         key1, key2 = jax.random.split(step_key)
-        c = len(minibatches)
-        keys = jax.random.split(key2, c)
-        cluster_p_ys, cluster_ws, cluster_entropies, total_entropies = jax.vmap(split_proposal, in_axes=(0, 0, None, None, None, None))(
+
+        logp_x_y = update_logp_x_y(data, w)
+        logp_y_x = update_logp_y_x(p_y, logp_x_y)
+        
+        # hard clustering
+        assignments = jax.random.categorical(key2, logp_y_x, axis=1)
+        p_y_x = jax.nn.one_hot(assignments, num_classes=n_clusters)
+        conditional_H = conditional_entropy(data, p_y_x)
+        total_H_hard_clustering = jnp.nansum(conditional_H * p_y) - jnp.nansum(p_y * jnp.log(p_y))
+
+        key1, key2 = jax.random.split(key1)
+        minibatches = make_minibatches(key2, data, assignments, n_clusters, minibatch_size)
+
+        key1, key2 = jax.random.split(key1)
+        keys = jax.random.split(key2, n_clusters)
+        cluster_p_ys, cluster_ws, cluster_H, total_H = jax.vmap(split_proposal, in_axes=(0, 0, None, None, None, None))(
             keys, minibatches, n_gibbs, categorical_idxs, n_categories, n_branch)
 
-        entropy_deltas = conditional_entropies - total_entropies
-        best_idx = jnp.nanargmax(entropy_deltas)
+        H_deltas = p_y * (conditional_H - total_H)
+        best_idx = jnp.nanargmax(H_deltas)  # TODO: think about nans etc
 
-        p_y = cluster_p_ys[best_idx]
-        w = cluster_ws[best_idx]
-        split_entropy = cluster_entropies[best_idx]
+        best_p_y = cluster_p_ys[best_idx]
+        best_w = cluster_ws[best_idx]
+        best_H = cluster_H[best_idx]
 
-        prev_p_y = p_ys[best_idx]
-        p_ys = jnp.delete(p_ys, best_idx, axis=0, assume_unique_indices=True)
-        p_ys = jnp.concatenate((p_ys, prev_p_y * p_y), axis=0)
+        prev_p_y = p_y[best_idx]
+        p_y = p_y.at[best_idx].set(prev_p_y * best_p_y[0])
+        p_y = p_y.at[i+1].set(prev_p_y * best_p_y[1])
 
-        ws = jnp.delete(ws, best_idx, axis=0, assume_unique_indices=True)
-        ws = jnp.concatenate((ws, w), axis=0)
+        w = w.at[best_idx].set(best_w[0])
+        w = w.at[i+1].set(best_w[1])
 
-        conditional_entropies = jnp.delete(conditional_entropies, best_idx, axis=0, assume_unique_indices=True)
-        conditional_entropies = jnp.concatenate((conditional_entropies, split_entropy), axis=0)
+        conditional_H = conditional_H.at[best_idx].set(best_H[0])
+        conditional_H = conditional_H.at[i+1].set(best_H[1])
 
-        logp_x_y = update_logp_x_y(data, ws)
-        logp_y_x = update_logp_y_x(p_ys, logp_x_y)
+        logp_x_y = update_logp_x_y(data, w)
+        logp_y_x = update_logp_y_x(p_y, logp_x_y)
 
-        total_entropy_split = jnp.nansum(conditional_entropies * p_ys) - jnp.nansum(p_ys * jnp.log(p_ys))
-        # jax.debug.print("entropy: {total_entropy}", total_entropy=total_entropy)
+        total_H_split = jnp.nansum(conditional_H * p_y) - jnp.nansum(p_y * jnp.log(p_y))
 
         if rejuvenation:
             def rejuvenation_step(p_y_w, key):
@@ -69,42 +82,24 @@ def infer(key, data, n_splits, n_gibbs, categorical_idxs, n_categories, n_branch
 
             key1, key2 = jax.random.split(key1)
             keys = jax.random.split(key2, n_gibbs)
-            (p_ys, ws), _ = jax.lax.scan(rejuvenation_step, (p_ys, ws), keys)
-            logp_x_y = update_logp_x_y(data, ws)
-            logp_y_x = update_logp_y_x(p_ys, logp_x_y)
 
-            conditional_entropies = conditional_entropy(data, jnp.exp(logp_y_x))
-            total_entropy_rejuvenation = jnp.nansum(conditional_entropies * p_ys) - jnp.nansum(p_ys * jnp.log(p_ys))
-            # jax.debug.print("entropy after rejuvenation: {total_entropy}", total_entropy=total_entropy)
 
-        # hard clustering
-        key1, key2 = jax.random.split(key1)
-        assignments = jax.random.categorical(key1, logp_y_x, axis=1)
-        p_y_x = jax.nn.one_hot(assignments, num_classes=c + 1)
-        logp_y_x = jnp.log(p_y_x)
-        p_y = update_p_y(logp_y_x)
-        w = update_w(key2, data, logp_y_x, categorical_idxs, n_categories)
-        conditional_entropies = conditional_entropy(data, p_y_x)
-        total_entropy_hard_clustering = jnp.nansum(conditional_entropies * p_y) - jnp.nansum(p_y * jnp.log(p_y))
+            (p_y, w), _ = jax.lax.scan(rejuvenation_step, (p_y, w), keys)
+            logp_x_y = update_logp_x_y(data, w)
+            logp_y_x = update_logp_y_x(p_y, logp_x_y)
 
-        # jax.debug.print("entropy after sampling assignments: {total_entropy}", total_entropy=total_entropy)
+            conditional_H = conditional_entropy(data, jnp.exp(logp_y_x))
+            total_H_rejuvenation = jnp.nansum(conditional_H * p_y) - jnp.nansum(p_y * jnp.log(p_y))
 
-        return p_y, w, conditional_entropies, assignments, total_entropy_split, total_entropy_rejuvenation, total_entropy_hard_clustering
+        return (p_y, w, conditional_H), (total_H_split, total_H_rejuvenation, total_H_hard_clustering)
 
-    keys = jax.random.split(key, n_splits)
+    keys = jax.random.split(key, n_clusters - 1)
     # we could use lax.scan here, but at the cost of padding each step to the max number of clusters
-    for i in range(n_splits):
-        key = keys[i]
-        key, subkey = jax.random.split(key)
-        minibatches = make_minibatches(subkey, data, assignments, i + 1, minibatch_size)
 
-        p_ys, ws, conditional_entropies, assignments, total_entropy_split, total_entropy_rejuvenation, total_entropy_hard_clustering = infer_step(key, minibatches, p_ys, ws, conditional_entropies)
+    (p_ys, ws, conditional_H), (total_H_split, total_H_rejuvenation, total_H_hard_clustering) = jax.lax.scan(
+        infer_step, (p_ys, ws, conditional_H), (keys, jnp.arange(n_clusters - 1)))
 
-        total_entropies_split = total_entropies_split.at[i].set(total_entropy_split)
-        total_entropies_rejuvenation = total_entropies_rejuvenation.at[i].set(total_entropy_rejuvenation)
-        total_entropies_hard_clustering = total_entropies_hard_clustering.at[i].set(total_entropy_hard_clustering)
-
-    return p_ys, ws, conditional_entropies, total_entropies_split, total_entropies_rejuvenation, total_entropies_hard_clustering
+    return p_ys, ws, conditional_H, total_H_split, total_H_rejuvenation, total_H_hard_clustering
 
 def make_minibatches(key, data, c, num_clusters, minibatch_size):
     keys = jax.random.split(key, num_clusters)
@@ -133,18 +128,24 @@ def split_proposal(key, data, n_gibbs, categorical_idxs: Integer[Array, "k"], n_
     logp_x_y = update_logp_x_y(data, w)
     logp_y_x = update_logp_y_x(p_y, logp_x_y)
 
-    cluster_entropies = conditional_entropy(data, jnp.exp(logp_y_x))
-    total_entropy = cluster_entropies @ p_y - jnp.sum(p_y * jnp.log(p_y))
-    return p_y, w, cluster_entropies, total_entropy
+    cluster_H = conditional_entropy(data, jnp.exp(logp_y_x))
+    total_H = cluster_H @ p_y - jnp.sum(p_y * jnp.log(p_y))
+    return p_y, w, cluster_H, total_H
 
 def update_logp_x_y(data: Bool[Array, 'n k'], w_init: Float[Array, 'c k']):
     return jnp.sum(jnp.where(data[:, None, :], jnp.log(w_init)[None, ...], 0), axis=-1)
 
 def update_logp_y_x(p_y: Float[Array, 'c'], logp_x_y: Float[Array, 'n c']):
     logp_y_x =  jnp.log(p_y)[None, :] + logp_x_y
+    nan_mask = jnp.isnan(logp_y_x)
+    logp_y_x = jnp.where(nan_mask, -jnp.inf, logp_y_x)
     logZ = jax.nn.logsumexp(logp_y_x, axis=-1)
     logp_y_x = logp_y_x - logZ[..., None]
+    # logp_y_x = jnp.where(nan_mask, jnp.nan, logp_y_x)
     return logp_y_x
+
+def nanlogsumexp(x):
+    return jax.nn.logsumexp(jnp.where(jnp.isnan(x), 0, x))
 
 def update_w(key: Array, data: Bool[Array, 'n k'], logp_y_x: Float[Array, 'n c'], categorical_idxs: Integer[Array, "k"], n_categories: int):
     counts = jnp.einsum('nc,nk->ck', jnp.exp(logp_y_x), data)
