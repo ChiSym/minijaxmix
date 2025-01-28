@@ -22,7 +22,7 @@ def conditional_entropy(data, c):
     return res
 
 @partial(jax.jit, static_argnames=("n_clusters", "n_gibbs", "n_categories", "n_branch", "rejuvenation", "minibatch_size"))
-def infer(key, data, n_clusters, n_gibbs, categorical_idxs, n_categories, n_branch=2, rejuvenation=True, minibatch_size=1000):
+def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_branch=2, rejuvenation=True, minibatch_size=1000):
     N, k = data.shape
     p_ys = jnp.zeros(n_clusters)
     p_ys = p_ys.at[0].set(1.)
