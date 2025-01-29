@@ -76,28 +76,34 @@ def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_bran
 
         total_H_split = jnp.nansum(conditional_H * p_y) - jnp.nansum(p_y * jnp.log(p_y))
 
-        if rejuvenation:
-            def rejuvenation_step(p_y_w, key):
-                return gibbs_sampling(key, data, p_y_w[0], p_y_w[1], categorical_idxs, n_categories), None
+        return (p_y, w, conditional_H), (total_H_split, total_H_hard_clustering)
 
-            key1, key2 = jax.random.split(key1)
-            keys = jax.random.split(key2, n_gibbs)
+    def rejuvenation(carry, key):
+        p_y, w, conditional_H = carry
 
+        def rejuvenation_step(p_y_w, key):
+            return gibbs_sampling(key, data, p_y_w[0], p_y_w[1], categorical_idxs, n_categories), None
 
-            (p_y, w), _ = jax.lax.scan(rejuvenation_step, (p_y, w), keys)
-            logp_x_y = update_logp_x_y(data, w)
-            logp_y_x = update_logp_y_x(p_y, logp_x_y)
+        keys = jax.random.split(key, n_gibbs)
 
-            conditional_H = conditional_entropy(data, jnp.exp(logp_y_x))
-            total_H_rejuvenation = jnp.nansum(conditional_H * p_y) - jnp.nansum(p_y * jnp.log(p_y))
+        (p_y, w), _ = jax.lax.scan(rejuvenation_step, (p_y, w), keys)
+        logp_x_y = update_logp_x_y(data, w)
+        logp_y_x = update_logp_y_x(p_y, logp_x_y)
 
-        return (p_y, w, conditional_H), (total_H_split, total_H_rejuvenation, total_H_hard_clustering)
+        conditional_H = conditional_entropy(data, jnp.exp(logp_y_x))
+        total_H_rejuvenation = jnp.nansum(conditional_H * p_y) - jnp.nansum(p_y * jnp.log(p_y))
 
-    keys = jax.random.split(key, n_clusters - 1)
+        return (p_y, w, conditional_H), total_H_rejuvenation
+
+    key, subkey = jax.random.split(key)
+    keys = jax.random.split(subkey, n_clusters - 1)
     # we could use lax.scan here, but at the cost of padding each step to the max number of clusters
 
-    (p_ys, ws, conditional_H), (total_H_split, total_H_rejuvenation, total_H_hard_clustering) = jax.lax.scan(
+    (p_ys, ws, conditional_H), (total_H_split, total_H_hard_clustering) = jax.lax.scan(
         infer_step, (p_ys, ws, conditional_H), (keys, jnp.arange(n_clusters - 1)))
+
+    if rejuvenation:
+        (p_ys, ws, conditional_H), total_H_rejuvenation =  rejuvenation((p_ys, ws, conditional_H), key) 
 
     return p_ys, ws, conditional_H, total_H_split, total_H_rejuvenation, total_H_hard_clustering
 
