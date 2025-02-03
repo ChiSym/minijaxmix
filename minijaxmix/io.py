@@ -1,7 +1,6 @@
 import polars as pl
 import numpy as np
 import jax
-import jax.numpy as jnp
 import jax.random as random
 
 def discretize_dataframe(df: pl.DataFrame, n_bins: int = 20):
@@ -42,7 +41,7 @@ def load_local_dataset(dataset_path):
 
     return train_df, test_df
 
-def load_bernoulli_noise(num_rows=1000, num_cols=5, train_split=0.8):
+def load_bernoulli_noise(num_rows=100, num_cols=10, train_split=0.8):
     key = random.key(0)
     keys = random.split(key, num_rows)
     data = jax.vmap(random.bernoulli, in_axes=(0, None, None))(keys, 0.5, (num_cols,))
@@ -50,8 +49,8 @@ def load_bernoulli_noise(num_rows=1000, num_cols=5, train_split=0.8):
     train_data = data[:int(num_rows * train_split)]
     test_data = data[int(num_rows * train_split):]
 
-    train_df = pl.DataFrame.transpose(pl.DataFrame(train_data))
-    test_df = pl.DataFrame.transpose(pl.DataFrame(test_data))
+    train_df = pl.DataFrame.transpose(pl.DataFrame(train_data.tolist())).cast(pl.Utf8)
+    test_df = pl.DataFrame.transpose(pl.DataFrame(test_data.tolist())).cast(pl.Utf8)
 
     return train_df, test_df
 

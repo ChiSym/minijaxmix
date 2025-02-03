@@ -29,7 +29,7 @@ dataset_paths = [
     "data/lpm/PUMD",
 ]
 
-def run_inference(train_df, test_df):
+def run_inference(train_df, test_df, dataset_path):
     df = pl.concat((train_df, test_df))
 
     schema, discretized_df, categorical_idxs = discretize_dataframe(df)
@@ -66,11 +66,16 @@ if len(sys.argv) == 1: # default run, no additional params
     for dataset_path in dataset_paths:
         print(dataset_path)
         train_df, test_df = load_huggingface(dataset_path)
-        run_inference(train_df, test_df)
-elif sys.argv[2] == "bernoulli":
-    train_df, test_df = load_bernoulli_noise()
-    run_inference(train_df, test_df)
+        run_inference(train_df, test_df, dataset_path)
+elif sys.argv[1] == "bernoulli":
+    if len(sys.argv) > 2:
+        num_rows = int(sys.argv[2])
+        num_cols = int(sys.argv[3])
+        train_df, test_df = load_bernoulli_noise(num_rows, num_cols)
+    else:
+        train_df, test_df = load_bernoulli_noise()
+    run_inference(train_df, test_df, "bernoulli")
 else: # custom dataset
-    custom_dataset_path = sys.argv[2]
+    custom_dataset_path = sys.argv[1]
     train_df, test_df = load_local_dataset(custom_dataset_path)
-    run_inference(train_df, test_df)
+    run_inference(train_df, test_df, custom_dataset_path)
