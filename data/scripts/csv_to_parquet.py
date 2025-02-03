@@ -4,8 +4,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-csv_file = '../data/medianHouseholdIncome/data-test-full-num.csv'
-parquet_file = '../data/medianHouseholdIncome/data-test-full-num.parquet'
+csv_file = '../medianHouseholdIncome/data-test-full-num.csv'
+parquet_file = '../medianHouseholdIncome/data-test-full-num.parquet'
 chunksize = 100_000
 
 csv_stream = pd.read_csv(csv_file, sep='\t', chunksize=chunksize, low_memory=False)
