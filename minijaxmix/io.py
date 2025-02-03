@@ -1,5 +1,8 @@
 import polars as pl
 import numpy as np
+import jax
+import jax.numpy as jnp
+import jax.random as random
 
 def discretize_dataframe(df: pl.DataFrame, n_bins: int = 20):
     schema = make_schema(df)
@@ -26,6 +29,29 @@ def load_huggingface(dataset_path):
     }
     train_df = pl.read_parquet(f"hf://datasets/Large-Population-Model/model-building-evaluation/{splits['train']}")
     test_df = pl.read_parquet(f"hf://datasets/Large-Population-Model/model-building-evaluation/{splits['test']}")
+
+    return train_df, test_df
+
+def load_local_dataset(dataset_path):
+    splits = {
+        "train": f"{dataset_path}/data-train-num.parquet",
+        "test": f"{dataset_path}/data-test-full-num.parquet"
+    }
+    train_df = pl.read_parquet(splits["train"])
+    test_df = pl.read_parquet(splits["test"])
+
+    return train_df, test_df
+
+def load_bernoulli_noise(num_rows=1000, num_cols=5, train_split=0.8):
+    key = random.key(0)
+    keys = random.split(key, num_rows)
+    data = jax.vmap(random.bernoulli, in_axes=(0, None, None))(keys, 0.5, (num_cols,))
+
+    train_data = data[:int(num_rows * train_split)]
+    test_data = data[int(num_rows * train_split):]
+
+    train_df = pl.DataFrame.transpose(pl.DataFrame(train_data))
+    test_df = pl.DataFrame.transpose(pl.DataFrame(test_data))
 
     return train_df, test_df
 

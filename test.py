@@ -11,13 +11,14 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 # jax.config.update("jax_explain_cache_misses", True)
 
 # %%
-from minijaxmix.io import load_huggingface, discretize_dataframe, to_dummies
+from minijaxmix.io import load_huggingface, load_local_dataset, load_bernoulli_noise, discretize_dataframe, to_dummies
 from minijaxmix.infer import infer
 import polars as pl
 import jax.numpy as jnp
 import time
 import numpy as np
 from functools import partial
+import sys 
 
 dataset_paths = [
     "data/CTGAN/covertype", 
@@ -27,9 +28,8 @@ dataset_paths = [
     "data/lpm/PUMS",
     "data/lpm/PUMD",
 ]
-for dataset_path in dataset_paths:
-    print(dataset_path)
-    train_df, test_df = load_huggingface(dataset_path)
+
+def run_inference(train_df, test_df):
     df = pl.concat((train_df, test_df))
 
     schema, discretized_df, categorical_idxs = discretize_dataframe(df)
@@ -60,3 +60,17 @@ for dataset_path in dataset_paths:
 
     dataset_name = dataset_path.split("/")[-1]
     jnp.savez(f"{dataset_name}.npz", p_ys=p_ys, ws=ws, conditional_entropies=conditional_entropies, total_entropies_split=total_entropies_split, total_entropies_rejuvenation=total_entropies_rejuvenation, total_entropies_hard_clustering=total_entropies_hard_clustering)
+
+
+if len(sys.argv) == 1: # default run, no additional params
+    for dataset_path in dataset_paths:
+        print(dataset_path)
+        train_df, test_df = load_huggingface(dataset_path)
+        run_inference(train_df, test_df)
+elif sys.argv[2] == "bernoulli":
+    train_df, test_df = load_bernoulli_noise()
+    run_inference(train_df, test_df)
+else: # custom dataset
+    custom_dataset_path = sys.argv[2]
+    train_df, test_df = load_local_dataset(custom_dataset_path)
+    run_inference(train_df, test_df)
