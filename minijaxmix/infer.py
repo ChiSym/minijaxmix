@@ -25,20 +25,20 @@ def conditional_entropy(data, c):
 def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_branch=2, rejuvenation=True, minibatch_size=1000):
     N, k = data.shape
     p_ys = jnp.zeros(n_clusters)
-    p_ys = p_ys.at[0].set(1.)
+    p_ys = p_ys.at[0].set(1.) # y contains the cluster weights (often called pi)
     ws = jnp.nan * jnp.zeros((n_clusters, k))
-    ws = ws.at[0].set(jnp.mean(data, axis=0))
+    ws = ws.at[0].set(jnp.mean(data, axis=0)) # initialize weights -- only one cluster at initialization; dimension = num clusters X num columns (k)
     conditional_H = jnp.zeros(n_clusters)
-    conditional_H = conditional_H.at[0].set(entropy(data))
+    conditional_H = conditional_H.at[0].set(entropy(data)) # initial conditional entropy of data given cluster is full data entropy, since it's all in the first cluster
 
     def infer_step(carry, key_i):
-        p_y, w, conditional_H = carry
+        p_y, w, conditional_H = carry # carry over the cluster weights (p_y), the cluster params (w), and the conditional entropy
         step_key, i = key_i
 
         key1, key2 = jax.random.split(step_key)
 
-        logp_x_y = update_logp_x_y(data, w)
-        logp_y_x = update_logp_y_x(p_y, logp_x_y)
+        logp_x_y = update_logp_x_y(data, w) # intermediate step for computing next line
+        logp_y_x = update_logp_y_x(p_y, logp_x_y) # update assignments, given cluster weights, cluster params, and data
         
         # hard clustering
         assignments = jax.random.categorical(key2, logp_y_x, axis=1)
@@ -52,27 +52,29 @@ def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_bran
         key1, key2 = jax.random.split(key1)
         keys = jax.random.split(key2, n_clusters)
         cluster_p_ys, cluster_ws, cluster_H, total_H = jax.vmap(split_proposal, in_axes=(0, 0, None, None, None, None))(
-            keys, minibatches, n_gibbs, categorical_idxs, n_categories, n_branch)
+            keys, minibatches, n_gibbs, categorical_idxs, n_categories, n_branch) # figure out split, in parallel
 
+        # figure out best split (i.e. cluster and split point inside cluster that causes greatest decrease in entropy)
         H_deltas = p_y * (conditional_H - total_H)
         best_idx = jnp.nanargmax(H_deltas)  # TODO: think about nans etc
 
+        # pull out cluster weights (p_y), cluster params (w), and entropy of best cluster to split
         best_p_y = cluster_p_ys[best_idx]
         best_w = cluster_ws[best_idx]
         best_H = cluster_H[best_idx]
 
         prev_p_y = p_y[best_idx]
-        p_y = p_y.at[best_idx].set(prev_p_y * best_p_y[0])
-        p_y = p_y.at[i+1].set(prev_p_y * best_p_y[1])
+        p_y = p_y.at[best_idx].set(prev_p_y * best_p_y[0]) # modify cluster weight for split cluster
+        p_y = p_y.at[i+1].set(prev_p_y * best_p_y[1]) # add cluster weight for new cluster!
 
-        w = w.at[best_idx].set(best_w[0])
-        w = w.at[i+1].set(best_w[1])
+        w = w.at[best_idx].set(best_w[0]) # modify cluster params for split cluster
+        w = w.at[i+1].set(best_w[1]) # add cluster params for new cluster!
 
-        conditional_H = conditional_H.at[best_idx].set(best_H[0])
+        conditional_H = conditional_H.at[best_idx].set(best_H[0]) # modify conditional entropy for 
         conditional_H = conditional_H.at[i+1].set(best_H[1])
 
         logp_x_y = update_logp_x_y(data, w)
-        logp_y_x = update_logp_y_x(p_y, logp_x_y)
+        logp_y_x = update_logp_y_x(p_y, logp_x_y) # where is this being used?
 
         total_H_split = jnp.nansum(conditional_H * p_y) - jnp.nansum(p_y * jnp.log(p_y))
 
@@ -113,7 +115,7 @@ def make_minibatches(key, data, c, num_clusters, minibatch_size):
     return clusters
 
 @partial(jax.jit, static_argnames=("n_gibbs", "n_segments", "n_categories"))
-def split_proposal(key, data, n_gibbs, categorical_idxs: Integer[Array, "k"], n_categories: int, n_segments=2):
+def split_proposal(key, data, n_gibbs, categorical_idxs: Integer[Array, "k"], n_categories: int, n_segments=2): # n_segments = 2 means plan is to split cluster into two sub-clusters
     N = data.shape[0]
     key, subkey = jax.random.split(key)
     alpha = jnp.ones(n_segments)
@@ -141,6 +143,7 @@ def split_proposal(key, data, n_gibbs, categorical_idxs: Integer[Array, "k"], n_
 def update_logp_x_y(data: Bool[Array, 'n k'], w_init: Float[Array, 'c k']):
     return jnp.sum(jnp.where(data[:, None, :], jnp.log(w_init)[None, ...], 0), axis=-1)
 
+# update the assignments (logp_y_x) given cluster weights (p_y's = pi's), data (x), cluster params (w's) -- note that data, cluster params used in logp_x_y computation
 def update_logp_y_x(p_y: Float[Array, 'c'], logp_x_y: Float[Array, 'n c']):
     logp_y_x =  jnp.log(p_y)[None, :] + logp_x_y
     nan_mask = jnp.isnan(logp_y_x)
@@ -153,6 +156,7 @@ def update_logp_y_x(p_y: Float[Array, 'c'], logp_x_y: Float[Array, 'n c']):
 def nanlogsumexp(x):
     return jax.nn.logsumexp(jnp.where(jnp.isnan(x), 0, x))
 
+# update the w's (cluster params) given data (x), assignments (logp_y_x)
 def update_w(key: Array, data: Bool[Array, 'n k'], logp_y_x: Float[Array, 'n c'], categorical_idxs: Integer[Array, "k"], n_categories: int):
     counts = jnp.einsum('nc,nk->ck', jnp.exp(logp_y_x), data)
     alpha = counts + ALPHA
@@ -172,6 +176,7 @@ def sample_categorical(key: Array, logprobs: Float[Array, 'k'], categorical_idxs
     maxes = maxes.take(categorical_idxs)
     return maxes == logprobs + x
 
+# update the cluster weights given assignments
 def update_p_y(logp_y_x: Float[Array, 'n c']):
     p_y = jnp.mean(jnp.exp(logp_y_x), axis=0)
     return p_y
@@ -179,7 +184,7 @@ def update_p_y(logp_y_x: Float[Array, 'n c']):
 @partial(jax.jit, static_argnames=("n_categories"))
 def gibbs_sampling(key: Array, data: Bool[Array, 'n k'], p_y: Float[Array, 'c'], w_init: Float[Array, 'c k'], categorical_idxs: Integer[Array, "k"], n_categories: int):
     logp_x_y = update_logp_x_y(data, w_init)
-    logp_y_x = update_logp_y_x(p_y, logp_x_y)
-    w = update_w(key, data, logp_y_x, categorical_idxs, n_categories)
-    p_y = update_p_y(logp_y_x)
-    return p_y, w
+    logp_y_x = update_logp_y_x(p_y, logp_x_y) # update assignments
+    w = update_w(key, data, logp_y_x, categorical_idxs, n_categories) # update cluster params
+    p_y = update_p_y(logp_y_x) # update cluster weights
+    return p_y, w # return cluster weights, cluster params
