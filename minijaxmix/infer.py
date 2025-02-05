@@ -8,6 +8,7 @@ from functools import partial
 import numpy as np
 from jaxtyping import Array, Float, Bool, Integer
 import time
+from minijaxmix.query import sample_dirichlet, sample_categorical
 
 ALPHA = 1.0
 
@@ -159,18 +160,6 @@ def update_w(key: Array, data: Bool[Array, 'n k'], logp_y_x: Float[Array, 'n c']
     keys = jax.random.split(key, alpha.shape[0])
     w = jax.vmap(sample_dirichlet, in_axes=(0, 0, None, None))(keys, alpha, categorical_idxs, n_categories)
     return w
-
-def sample_dirichlet(key: Array, alpha: Float[Array, 'k'], categorical_idxs: Integer[Array, "k"], n_categories: int) -> Float[Array, 'k']:
-    y = jax.random.gamma(key, alpha)
-    y_sum = jax.ops.segment_sum(y, categorical_idxs, num_segments=n_categories, indices_are_sorted=True)
-    y_sum_full = y_sum.take(categorical_idxs)
-    return y / y_sum_full
-
-def sample_categorical(key: Array, logprobs: Float[Array, 'k'], categorical_idxs: Integer[Array, "k"], n_categories: int) -> Bool[Array, 'k']:
-    x = jax.random.gumbel(key, shape=logprobs.shape[0])
-    maxes = jax.ops.segment_max(logprobs + x, categorical_idxs, num_segments=n_categories)
-    maxes = maxes.take(categorical_idxs)
-    return maxes == logprobs + x
 
 def update_p_y(logp_y_x: Float[Array, 'n c']):
     p_y = jnp.mean(jnp.exp(logp_y_x), axis=0)
