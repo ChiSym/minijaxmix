@@ -41,7 +41,7 @@ for dataset_path in dataset_paths:
 
     n_categories = categorical_idxs.max() + 1
 
-    partial_infer = partial(infer, n_clusters=300, n_gibbs=20, n_categories=n_categories, n_branch=2, rejuvenation=True)
+    partial_infer = partial(infer, n_clusters=100, n_gibbs=20, n_categories=n_categories, n_branch=2, rejuvenation=True)
     jit_infer = jax.jit(partial_infer)
 
     key = jax.random.PRNGKey(0)
@@ -59,4 +59,4 @@ for dataset_path in dataset_paths:
     print(f"Time run: {end - start}")
 
     dataset_name = dataset_path.split("/")[-1]
-    jnp.savez(f"{dataset_name}.npz", p_ys=p_ys, ws=ws, conditional_entropies=conditional_entropies, total_entropies_split=total_entropies_split, total_entropies_rejuvenation=total_entropies_rejuvenation, total_entropies_hard_clustering=total_entropies_hard_clustering)
+    jnp.savez(f"{dataset_name}_100_alpha_1e-5.npz", p_ys=p_ys, ws=ws, conditional_entropies=conditional_entropies, total_entropies_split=total_entropies_split, total_entropies_rejuvenation=total_entropies_rejuvenation, total_entropies_hard_clustering=total_entropies_hard_clustering)
