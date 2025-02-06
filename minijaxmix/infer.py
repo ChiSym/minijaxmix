@@ -10,7 +10,7 @@ from jaxtyping import Array, Float, Bool, Integer
 import time
 from minijaxmix.query import sample_dirichlet, sample_categorical
 
-ALPHA = 1.0
+ALPHA = 1e-5
 
 def entropy(data):
     w = jnp.log(jnp.mean(data, axis=0))
@@ -130,7 +130,6 @@ def split_proposal(key, data, n_gibbs, categorical_idxs: Integer[Array, "k"], n_
     key, subkey = jax.random.split(key)
     keys = jax.random.split(subkey, n_gibbs)
     (p_y, w), _ = jax.lax.scan(em_step, (p_y, w), keys)
-    # print(f"em_step took {end_time - start_time} seconds")
 
     logp_x_y = update_logp_x_y(data, w)
     logp_y_x = update_logp_y_x(p_y, logp_x_y)
@@ -140,22 +139,23 @@ def split_proposal(key, data, n_gibbs, categorical_idxs: Integer[Array, "k"], n_
     return p_y, w, cluster_H, total_H
 
 def update_logp_x_y(data: Bool[Array, 'n k'], w_init: Float[Array, 'c k']):
-    return jnp.sum(jnp.where(data[:, None, :], jnp.log(w_init)[None, ...], 0), axis=-1)
+    return jnp.sum(jnp.where(data[:, None, :], w_init[None, ...], 0), axis=-1)
 
 def update_logp_y_x(p_y: Float[Array, 'c'], logp_x_y: Float[Array, 'n c']):
-    logp_y_x =  jnp.log(p_y)[None, :] + logp_x_y
-    nan_mask = jnp.isnan(logp_y_x)
-    logp_y_x = jnp.where(nan_mask, -jnp.inf, logp_y_x)
-    logZ = jax.nn.logsumexp(logp_y_x, axis=-1)
-    logp_y_x = logp_y_x - logZ[..., None]
-    # logp_y_x = jnp.where(nan_mask, jnp.nan, logp_y_x)
-    return logp_y_x
+    logp_y_x0 =  jnp.log(p_y)[None, :] + logp_x_y
+    nan_mask = jnp.isnan(logp_y_x0)
+    logp_y_x1 = jnp.where(nan_mask, -jnp.inf, logp_y_x0)
+    logZ = jax.nn.logsumexp(logp_y_x1, axis=-1)
+    logp_y_x2 = logp_y_x1 - logZ[..., None]
+    return logp_y_x2
 
 def nanlogsumexp(x):
     return jax.nn.logsumexp(jnp.where(jnp.isnan(x), 0, x))
 
 def update_w(key: Array, data: Bool[Array, 'n k'], logp_y_x: Float[Array, 'n c'], categorical_idxs: Integer[Array, "k"], n_categories: int):
-    counts = jnp.einsum('nc,nk->ck', jnp.exp(logp_y_x), data)
+    p_y_x = jnp.exp(logp_y_x)
+    counts = jnp.einsum('nc,nk->ck', p_y_x, data)
+    is_nan = jnp.isnan(logp_y_x).any()
     alpha = counts + ALPHA
     keys = jax.random.split(key, alpha.shape[0])
     w = jax.vmap(sample_dirichlet, in_axes=(0, 0, None, None))(keys, alpha, categorical_idxs, n_categories)
@@ -168,7 +168,9 @@ def update_p_y(logp_y_x: Float[Array, 'n c']):
 @partial(jax.jit, static_argnames=("n_categories"))
 def gibbs_sampling(key: Array, data: Bool[Array, 'n k'], p_y: Float[Array, 'c'], w_init: Float[Array, 'c k'], categorical_idxs: Integer[Array, "k"], n_categories: int):
     logp_x_y = update_logp_x_y(data, w_init)
+
     logp_y_x = update_logp_y_x(p_y, logp_x_y)
-    w = update_w(key, data, logp_y_x, categorical_idxs, n_categories)
+    w_new = update_w(key, data, logp_y_x, categorical_idxs, n_categories)
     p_y = update_p_y(logp_y_x)
-    return p_y, w
+
+    return p_y, w_new

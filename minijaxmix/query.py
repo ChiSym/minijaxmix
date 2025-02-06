@@ -22,10 +22,14 @@ def sample(key: Array, logpi: Float[Array, "c"], w: Float[Array, "c k"], N: int,
     return jax.vmap(sample_categorical, in_axes=(0, 0, None, None))(keys, ws, categorical_idxs, n_categories)
 
 def sample_dirichlet(key: Array, alpha: Float[Array, 'k'], categorical_idxs: Integer[Array, "k"], n_categories: int) -> Float[Array, 'k']:
-    y = jax.random.gamma(key, alpha)
-    y_sum = jax.ops.segment_sum(y, categorical_idxs, num_segments=n_categories, indices_are_sorted=True)
+    y = jax.random.loggamma(key, alpha)
+    c = jnp.max(y)
+    y_exp = jnp.exp(y - c)
+    y_sum = jax.ops.segment_sum(y_exp, categorical_idxs, num_segments=n_categories, indices_are_sorted=True)
+    y_sum += c
     y_sum_full = y_sum.take(categorical_idxs)
-    return y / y_sum_full
+
+    return y - y_sum_full
 
 def sample_categorical(key: Array, logprobs: Float[Array, 'k'], categorical_idxs: Integer[Array, "k"], n_categories: int) -> Bool[Array, 'k']:
     x = jax.random.gumbel(key, shape=logprobs.shape[0])
