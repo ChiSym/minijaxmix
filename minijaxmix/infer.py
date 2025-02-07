@@ -1,14 +1,8 @@
 import jax
-jax.config.update("jax_compilation_cache_dir", "jax_cache")
-jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
-jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
-
 import jax.numpy as jnp
 from functools import partial
-import numpy as np
 from jaxtyping import Array, Float, Bool, Integer
-import time
-from minijaxmix.query import sample_dirichlet, sample_categorical
+from minijaxmix.query import sample_dirichlet, logprob
 
 ALPHA = 1e-5
 
@@ -22,8 +16,8 @@ def conditional_entropy(data, c):
     res = - jnp.sum(jnp.where(c, c * p_x_y, 0), axis=0) / jnp.sum(c, axis=0)
     return res
 
-@partial(jax.jit, static_argnames=("n_clusters", "n_gibbs", "n_categories", "n_branch", "rejuvenation", "minibatch_size"))
-def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_branch=2, rejuvenation=True, minibatch_size=1000):
+@partial(jax.jit, static_argnames=("n_clusters", "n_gibbs", "n_categories", "n_branch", "rejuvenation", "minibatch_size", "test"))
+def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_branch=2, rejuvenation=True, minibatch_size=1000, test=False, test_data=None):
     N, k = data.shape
     p_ys = jnp.zeros(n_clusters)
     p_ys = p_ys.at[0].set(1.)
@@ -77,7 +71,13 @@ def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_bran
 
         total_H_split = jnp.nansum(conditional_H * p_y) - jnp.nansum(p_y * jnp.log(p_y))
 
-        return (p_y, w, conditional_H), (total_H_split, total_H_hard_clustering)
+        if test:
+            logprobs = jax.vmap(jax.vmap(logprob, in_axes=(None, 0)), in_axes=(0, None))(test_data, w)
+            logprobs = jax.nn.logsumexp(logprobs, b=p_y, axis=1)
+            logprobs = jnp.sum(logprobs)
+            return (p_y, w, conditional_H), (total_H_split, total_H_hard_clustering, logprobs)
+        else:
+            return (p_y, w, conditional_H), (total_H_split, total_H_hard_clustering, None)
 
     def rejuvenation(carry, key):
         p_y, w, conditional_H = carry
@@ -100,13 +100,13 @@ def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_bran
     keys = jax.random.split(subkey, n_clusters - 1)
     # we could use lax.scan here, but at the cost of padding each step to the max number of clusters
 
-    (p_ys, ws, conditional_H), (total_H_split, total_H_hard_clustering) = jax.lax.scan(
+    (p_ys, ws, conditional_H), (total_H_split, total_H_hard_clustering, logprobs) = jax.lax.scan(
         infer_step, (p_ys, ws, conditional_H), (keys, jnp.arange(n_clusters - 1)))
 
     if rejuvenation:
         (p_ys, ws, conditional_H), total_H_rejuvenation =  rejuvenation((p_ys, ws, conditional_H), key) 
 
-    return p_ys, ws, conditional_H, total_H_split, total_H_rejuvenation, total_H_hard_clustering
+    return p_ys, ws, conditional_H, total_H_split, total_H_rejuvenation, total_H_hard_clustering, logprobs
 
 def make_minibatches(key, data, c, num_clusters, minibatch_size):
     keys = jax.random.split(key, num_clusters)
