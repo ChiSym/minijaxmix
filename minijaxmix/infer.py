@@ -7,22 +7,34 @@ from minijaxmix.query import sample_dirichlet, logprob
 ALPHA_PI = 1
 ALPHA_W = 1e-5
 
-@jax.profiler.annotate_function
+def stratified_resampling(key, w, N) :
+  u = (jnp.arange(N) + jax.random.uniform(key, (N, ))) / N
+  bins = jnp.cumsum(w)
+  return jnp.digitize(u, bins)
+
+@jax.named_scope("entropy")
 def entropy(data):
     w = jnp.log(jnp.mean(data, axis=0))
     return -jnp.mean(jnp.sum(jnp.where(data, w, 0), axis=1))
 
-@jax.profiler.annotate_function
+@jax.named_scope("conditional_entropy")
 def conditional_entropy(data, c):
     w = jnp.einsum('nc,nk->ck', c, data) / jnp.sum(c, axis=0)[..., None]
     p_x_y = jnp.sum(jnp.where(data[:, None, :], jnp.log(w)[None, ...], 0), axis=-1)
     res = - jnp.sum(jnp.where(c, c * p_x_y, 0), axis=0) / jnp.sum(c, axis=0)
     return res
 
-@partial(jax.jit, static_argnames=("n_clusters", "n_gibbs", "n_categories", "n_branch", "rejuvenation", "minibatch_size", "test"))
-@jax.profiler.annotate_function
-def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_branch=2, rejuvenation=True, minibatch_size=1000, test=False, test_data=None):
+def predictive_logprob(data, w, p_y):
+    logprobs = jax.vmap(jax.vmap(logprob, in_axes=(None, 0)), in_axes=(0, None))(data, w)
+    logprobs = jax.nn.logsumexp(logprobs, b=p_y, axis=1)
+    logprobs = jnp.mean(logprobs)
+    return logprobs
+
+@partial(jax.jit, static_argnames=("n_iters", "proposals_per_particle", "n_gibbs", "n_categories", "rejuvenation", "minibatch_size", "test"))
+@jax.named_scope("infer")
+def infer(key, data, categorical_idxs, n_iters, proposals_per_particle, n_gibbs, n_categories, rejuvenation=True, minibatch_size=1000, test=False, test_data=None):
     N, k = data.shape
+    n_clusters = 1 + n_iters
     p_ys = jnp.zeros(n_clusters)
     p_ys = p_ys.at[0].set(1.)
     ws = jnp.nan * jnp.zeros((n_clusters, k))
@@ -32,7 +44,7 @@ def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_bran
     conditional_H = conditional_H.at[0].set(entropy(data))
     total_H_rejuvenation = None
 
-    @jax.profiler.annotate_function
+    @jax.named_scope("infer_step")
     def infer_step(carry, key_i):
         p_y, w, conditional_H = carry
         step_key, i = key_i
@@ -41,7 +53,7 @@ def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_bran
 
         # choose which clusters to split
         key1, key2 = jax.random.split(step_key)
-        clusters_to_split = jax.random.categorical(key1, jnp.log(p_y), shape=(n_clusters,), axis=0)
+        clusters_to_split = stratified_resampling(key1, p_y, proposals_per_particle)
        
         # minibatching
         key1, key2 = jax.random.split(key1)
@@ -50,11 +62,11 @@ def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_bran
         minibatches = make_minibatches(key2, data, logp_y_x_clusters_to_split, minibatch_size)
 
         key1, key2 = jax.random.split(key1)
-        keys = jax.random.split(key2, n_clusters)
+        keys = jax.random.split(key2, proposals_per_particle)
         cluster_p_ys, cluster_ws, cluster_H, total_H = jax.vmap(split_proposal, in_axes=(0, 0, None, None, None, None))(
-            keys, minibatches, n_gibbs, categorical_idxs, n_categories, n_branch)
+            keys, minibatches, n_gibbs, categorical_idxs, n_categories, 2)
 
-        H_deltas = p_y * (conditional_H - total_H)
+        H_deltas = p_y[clusters_to_split] * (conditional_H[clusters_to_split] - total_H)
         best_idx = jnp.nanargmax(H_deltas)
         cluster_idx = clusters_to_split[best_idx]
 
@@ -80,18 +92,18 @@ def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_bran
         conditional_H = conditional_entropy(data, jnp.exp(logp_y_x))
         total_H_split = jnp.nansum(conditional_H * p_y) - jnp.nansum(p_y * jnp.log(p_y))
 
-        (p_y, w, conditional_H), total_H_rejuvenation = rejuvenation((p_y, w, conditional_H), key1)
+        # (p_y, w, conditional_H), total_H_rejuvenation = rejuvenation((p_y, w, conditional_H), key1)
 
         if test:
             logprobs = jax.vmap(jax.vmap(logprob, in_axes=(None, 0)), in_axes=(0, None))(test_data, w)
             logprobs = jax.nn.logsumexp(logprobs, b=p_y, axis=1)
-            logprobs = jnp.sum(logprobs)
+            logprobs = jnp.mean(logprobs)
             return (p_y, w, conditional_H), (total_H_split, logprobs)
         else:
             return (p_y, w, conditional_H), (total_H_split, None)
 
 
-    @jax.profiler.annotate_function
+    @jax.named_scope("rejuvenation")
     def rejuvenation(carry, key):
         p_y, w, conditional_H = carry
 
@@ -115,12 +127,14 @@ def infer(key, data, categorical_idxs, n_clusters, n_gibbs, n_categories, n_bran
     (p_ys, ws, conditional_H), (total_H_split, logprobs) = jax.lax.scan(
         infer_step, (p_ys, ws, conditional_H), (keys, jnp.arange(n_clusters - 1)))
 
-    if rejuvenation:
-        (p_ys, ws, conditional_H), total_H_rejuvenation =  rejuvenation((p_ys, ws, conditional_H), key) 
+    # if rejuvenation:
+    #     (p_ys, ws, conditional_H), total_H_rejuvenation =  rejuvenation((p_ys, ws, conditional_H), key) 
+    #     new_logprobs = predictive_logprob(test_data, ws, p_ys)
+    #     logprobs = jnp.concatenate([logprobs, jnp.array([new_logprobs])])
 
     return p_ys, ws, conditional_H, total_H_split, total_H_rejuvenation, logprobs
 
-@jax.profiler.annotate_function
+@jax.named_scope("make_minibatches")
 def make_minibatches(key, data, logp_y_x, minibatch_size):
     n_clusters = logp_y_x.shape[1]
     idxs = jax.random.categorical(key, logp_y_x[..., None], axis=0, shape=(n_clusters, minibatch_size))
@@ -128,7 +142,7 @@ def make_minibatches(key, data, logp_y_x, minibatch_size):
     return clusters
 
 @partial(jax.jit, static_argnames=("n_gibbs", "n_segments", "n_categories"))
-@jax.profiler.annotate_function
+@jax.named_scope("split_proposal")
 def split_proposal(key, data, n_gibbs, categorical_idxs: Integer[Array, "k"], n_categories: int, n_segments=2):
     N = data.shape[0]
     key, subkey = jax.random.split(key)
@@ -154,11 +168,11 @@ def split_proposal(key, data, n_gibbs, categorical_idxs: Integer[Array, "k"], n_
     total_H = cluster_H @ p_y - jnp.sum(p_y * jnp.log(p_y))
     return p_y, w, cluster_H, total_H
 
-@jax.profiler.annotate_function
+@jax.named_scope("update_logp_x_y")
 def update_logp_x_y(data: Bool[Array, 'n k'], w_init: Float[Array, 'c k']):
     return jnp.sum(jnp.where(data[:, None, :], w_init[None, ...], 0), axis=-1)
 
-@jax.profiler.annotate_function
+@jax.named_scope("update_logp_y_x")
 def update_logp_y_x(p_y: Float[Array, 'c'], logp_x_y: Float[Array, 'n c']):
     logp_y_x0 =  jnp.log(p_y)[None, :] + logp_x_y
     nan_mask = jnp.isnan(logp_y_x0)
@@ -167,11 +181,11 @@ def update_logp_y_x(p_y: Float[Array, 'c'], logp_x_y: Float[Array, 'n c']):
     logp_y_x2 = logp_y_x1 - logZ[..., None]
     return logp_y_x2
 
-@jax.profiler.annotate_function
+@jax.named_scope("nanlogsumexp")
 def nanlogsumexp(x):
     return jax.nn.logsumexp(jnp.where(jnp.isnan(x), 0, x))
 
-@jax.profiler.annotate_function
+@jax.named_scope("update_w")
 def update_w(key: Array, data: Bool[Array, 'n k'], logp_y_x: Float[Array, 'n c'], categorical_idxs: Integer[Array, "k"], n_categories: int):
     p_y_x = jnp.exp(logp_y_x)
     counts = jnp.einsum('nc,nk->ck', p_y_x, data)
@@ -181,13 +195,13 @@ def update_w(key: Array, data: Bool[Array, 'n k'], logp_y_x: Float[Array, 'n c']
     w = jax.vmap(sample_dirichlet, in_axes=(0, 0, None, None))(keys, alpha, categorical_idxs, n_categories)
     return w
 
-@jax.profiler.annotate_function
+@jax.named_scope("update_p_y")
 def update_p_y(logp_y_x: Float[Array, 'n c']):
     p_y = jnp.mean(jnp.exp(logp_y_x), axis=0)
     return p_y
 
 @partial(jax.jit, static_argnames=("n_categories"))
-@jax.profiler.annotate_function
+@jax.named_scope("gibbs_sampling")
 def gibbs_sampling(key: Array, data: Bool[Array, 'n k'], p_y: Float[Array, 'c'], w_init: Float[Array, 'c k'], categorical_idxs: Integer[Array, "k"], n_categories: int):
     logp_x_y = update_logp_x_y(data, w_init)
 
