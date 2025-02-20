@@ -21,11 +21,11 @@ from functools import partial
 
 dataset_paths = [
     "data/CTGAN/covertype", 
-    "data/CTGAN/kddcup", 
-    "data/CTGAN/sydt", 
-    "data/lpm/CES",
-    "data/lpm/PUMS",
-    "data/lpm/PUMD",
+    # "data/CTGAN/kddcup", 
+    # "data/CTGAN/sydt", 
+    # "data/lpm/CES",
+    # "data/lpm/PUMS",
+    # "data/lpm/PUMD",
 ]
 for dataset_path in dataset_paths:
     print(dataset_path)
@@ -53,10 +53,17 @@ for dataset_path in dataset_paths:
     print(f"Time compilation: {end - start}")
 
     start = time.time()
-    p_ys, ws, conditional_entropies, total_entropies_split, total_entropies_rejuvenation, total_entropies_hard_clustering = compiled(
+    jax.profiler.start_trace("tensorboard")
+
+    p_ys, ws, conditional_entropies, total_entropies_split, total_entropies_rejuvenation, logprobs = compiled(
         key, train_data, categorical_idxs)
+
+    p_ys.block_until_ready()
+    jax.profiler.stop_trace()
+
     end = time.time()
+
     print(f"Time run: {end - start}")
 
     dataset_name = dataset_path.split("/")[-1]
-    jnp.savez(f"{dataset_name}_100_alpha_1e-5.npz", p_ys=p_ys, ws=ws, conditional_entropies=conditional_entropies, total_entropies_split=total_entropies_split, total_entropies_rejuvenation=total_entropies_rejuvenation, total_entropies_hard_clustering=total_entropies_hard_clustering)
+    jnp.savez(f"{dataset_name}_100_proposals.npz", p_ys=p_ys, ws=ws, conditional_entropies=conditional_entropies, total_entropies_split=total_entropies_split, total_entropies_rejuvenation=total_entropies_rejuvenation)

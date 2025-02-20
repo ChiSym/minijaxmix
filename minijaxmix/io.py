@@ -5,7 +5,7 @@ def discretize_dataframe(df: pl.DataFrame, n_bins: int = 20):
     schema = make_schema(df)
     categorical_df = df.select(schema["types"]["categorical"])
     numerical_df = df.select(schema["types"]["piecewise_uniform"]).with_columns(
-        pl.all().qcut(quantiles=n_bins).name.keep()
+        pl.all().qcut(quantiles=n_bins, labels=[str(i) for i in range(n_bins)]).name.keep()
     )
 
     categorical_idxs = np.concatenate(
