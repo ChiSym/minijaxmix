@@ -73,16 +73,15 @@ def infer(key, data, categorical_idxs, n_iters, proposals_per_particle, n_gibbs,
         best_p_y = cluster_p_ys[best_idx]
         best_w = cluster_ws[best_idx]
         best_H = cluster_H[best_idx]
+        new_idxs = jnp.array([cluster_idx, i+1])
 
         prev_p_y = p_y[cluster_idx]
-        p_y = p_y.at[cluster_idx].set(prev_p_y * best_p_y[0])
-        p_y = p_y.at[i+1].set(prev_p_y * best_p_y[1])
+        new_p_y = prev_p_y * best_p_y
+        p_y = p_y.at[new_idxs].set(new_p_y)
 
-        w = w.at[cluster_idx].set(best_w[0])
-        w = w.at[i+1].set(best_w[1])
+        w = w.at[new_idxs].set(best_w)
 
-        conditional_H = conditional_H.at[cluster_idx].set(best_H[0])
-        conditional_H = conditional_H.at[i+1].set(best_H[1])
+        conditional_H = conditional_H.at[new_idxs].set(best_H)
 
         logp_x_y = update_logp_x_y(data, w)
         logp_y_x = update_logp_y_x(p_y, logp_x_y)
