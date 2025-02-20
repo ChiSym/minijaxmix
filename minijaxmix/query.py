@@ -25,9 +25,10 @@ def sample_dirichlet(key: Array, alpha: Float[Array, 'k'], categorical_idxs: Int
     y = jax.random.loggamma(key, alpha)
     c = jnp.max(y)
     y_exp = jnp.exp(y - c)
-    y_sum = jax.ops.segment_sum(y_exp, categorical_idxs, num_segments=n_categories, indices_are_sorted=True)
-    y_sum += c
-    y_sum_full = y_sum.take(categorical_idxs)
+    y_sum = jax.ops.segment_sum(y_exp, categorical_idxs, num_segments=n_categories)
+    log_y_sum = jnp.log(y_sum)
+    y_sum_full = log_y_sum.take(categorical_idxs)
+    y_sum_full += c
 
     return y - y_sum_full
 
